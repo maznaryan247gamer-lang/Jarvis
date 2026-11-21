@@ -1,0 +1,934 @@
+name: Build JARVIS APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create JARVIS project files
+        run: |
+          mkdir -p app/src/main/java/com/jarvis/app app/src/main/res/values app/src/main/assets
+          cat > settings.gradle.kts <<'JARVIS_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "JarvisAI"
+          include(":app")
+          JARVIS_EOF
+          cat > build.gradle.kts <<'JARVIS_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          JARVIS_EOF
+          cat > gradle.properties <<'JARVIS_EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          JARVIS_EOF
+          cat > app/build.gradle.kts <<'JARVIS_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.jarvis.app"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.jarvis.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.1.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("androidx.security:security-crypto:1.1.0-alpha06")
+          }
+          JARVIS_EOF
+          cat > app/src/main/AndroidManifest.xml <<'JARVIS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.speech.RecognitionService" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.TTS_SERVICE" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:usesCleartextTraffic="true"
+                  android:label="JARVIS"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.Jarvis">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          JARVIS_EOF
+          cat > app/src/main/res/values/themes.xml <<'JARVIS_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.Jarvis" parent="Theme.AppCompat.NoActionBar">
+                  <item name="android:windowBackground">#0B0D10</item>
+                  <item name="android:statusBarColor">#0B0D10</item>
+                  <item name="android:navigationBarColor">#0B0D10</item>
+              </style>
+          </resources>
+          JARVIS_EOF
+          cat > app/src/main/java/com/jarvis/app/SettingsStore.kt <<'JARVIS_EOF'
+          package com.jarvis.app
+
+          import android.content.Context
+          import android.content.SharedPreferences
+          import androidx.security.crypto.EncryptedSharedPreferences
+          import androidx.security.crypto.MasterKey
+
+          /** Stores settings. The API key lives in encrypted preferences on this phone only. */
+          class SettingsStore(context: Context) {
+
+              private val prefs: SharedPreferences = try {
+                  val masterKey = MasterKey.Builder(context)
+                      .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                      .build()
+                  EncryptedSharedPreferences.create(
+                      context,
+                      "jarvis_secure",
+                      masterKey,
+                      EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                      EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                  )
+              } catch (e: Exception) {
+                  // Fallback: app-private storage (still not readable by other apps)
+                  context.getSharedPreferences("jarvis_fallback", Context.MODE_PRIVATE)
+              }
+
+              var apiKey: String
+                  get() = prefs.getString("api_key", "") ?: ""
+                  set(value) = prefs.edit().putString("api_key", value).apply()
+
+              /** "groq" (cloud API key) or "local" (your own AI server). Empty until first-run setup is done. */
+              var mode: String
+                  get() = prefs.getString("mode", "") ?: ""
+                  set(value) = prefs.edit().putString("mode", value).apply()
+
+              var localUrl: String
+                  get() = prefs.getString("local_url", "") ?: ""
+                  set(value) = prefs.edit().putString("local_url", value).apply()
+
+              var localModel: String
+                  get() = prefs.getString("local_model", DEFAULT_LOCAL_MODEL) ?: DEFAULT_LOCAL_MODEL
+                  set(value) = prefs.edit().putString("local_model", value).apply()
+
+              var model: String
+                  get() = prefs.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL
+                  set(value) = prefs.edit().putString("model", value).apply()
+
+              var speakReplies: Boolean
+                  get() = prefs.getBoolean("speak", true)
+                  set(value) = prefs.edit().putBoolean("speak", value).apply()
+
+              var speechRate: Float
+                  get() = prefs.getFloat("rate", 1.0f)
+                  set(value) = prefs.edit().putFloat("rate", value).apply()
+
+              companion object {
+                  const val DEFAULT_MODEL = "llama-3.3-70b-versatile"
+                  const val DEFAULT_LOCAL_MODEL = "llama3.2"
+              }
+          }
+          JARVIS_EOF
+          cat > app/src/main/java/com/jarvis/app/AiClient.kt <<'JARVIS_EOF'
+          package com.jarvis.app
+
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.IOException
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          /**
+           * The AI brain. Talks to any OpenAI-compatible chat endpoint:
+           * Groq in the cloud, or a local server (Ollama, LM Studio, llama.cpp).
+           */
+          object AiClient {
+
+              const val GROQ_URL = "https://api.groq.com/openai/v1"
+
+              /** messages: list of (role, content) where role is "user" or "assistant". */
+              fun chat(
+                  baseUrl: String,
+                  apiKey: String,
+                  model: String,
+                  system: String,
+                  messages: List<Pair<String, String>>
+              ): String {
+                  val arr = JSONArray()
+                  arr.put(JSONObject().put("role", "system").put("content", system))
+                  for ((role, content) in messages) {
+                      arr.put(JSONObject().put("role", role).put("content", content))
+                  }
+                  val body = JSONObject()
+                      .put("model", model)
+                      .put("messages", arr)
+                      .put("temperature", 0.7)
+
+                  val endpoint = baseUrl.trim().trimEnd('/') + "/chat/completions"
+                  val conn = URL(endpoint).openConnection() as HttpURLConnection
+                  try {
+                      conn.requestMethod = "POST"
+                      conn.connectTimeout = 15000
+                      conn.readTimeout = 120000
+                      conn.doOutput = true
+                      conn.setRequestProperty("Content-Type", "application/json")
+                      if (apiKey.isNotBlank()) {
+                          conn.setRequestProperty("Authorization", "Bearer $apiKey")
+                      }
+                      conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+
+                      val code = conn.responseCode
+                      val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                      val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+
+                      if (code !in 200..299) {
+                          val msg = try {
+                              JSONObject(text).getJSONObject("error").getString("message")
+                          } catch (e: Exception) {
+                              text.take(200)
+                          }
+                          throw IOException("AI server error $code: $msg")
+                      }
+
+                      return JSONObject(text)
+                          .getJSONArray("choices")
+                          .getJSONObject(0)
+                          .getJSONObject("message")
+                          .getString("content")
+                          .trim()
+                  } finally {
+                      conn.disconnect()
+                  }
+              }
+          }
+          JARVIS_EOF
+          cat > app/src/main/java/com/jarvis/app/MainActivity.kt <<'JARVIS_EOF'
+          package com.jarvis.app
+
+          import android.Manifest
+          import android.annotation.SuppressLint
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.net.Uri
+          import android.os.Bundle
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import android.webkit.JavascriptInterface
+          import android.webkit.WebView
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.content.ContextCompat
+          import org.json.JSONObject
+          import java.util.Locale
+
+          class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
+
+              private lateinit var webView: WebView
+              private lateinit var store: SettingsStore
+
+              private var tts: TextToSpeech? = null
+              private var ttsReady = false
+              private var recognizer: SpeechRecognizer? = null
+
+              private val history = ArrayList<Pair<String, String>>()
+
+              private val micPermission =
+                  registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                      if (granted) beginListening()
+                      else js("onJarvisError", "Microphone permission denied. You can still type to JARVIS.")
+                  }
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  store = SettingsStore(this)
+                  tts = TextToSpeech(this, this)
+
+                  webView = WebView(this)
+                  webView.settings.javaScriptEnabled = true
+                  webView.settings.domStorageEnabled = true
+                  webView.setBackgroundColor(0xFF0B0D10.toInt())
+                  webView.addJavascriptInterface(Bridge(), "Android")
+                  webView.loadUrl("file:///android_asset/index.html")
+                  setContentView(webView)
+              }
+
+              override fun onInit(status: Int) {
+                  if (status != TextToSpeech.SUCCESS) return
+                  val engine = tts ?: return
+                  val result = engine.setLanguage(Locale.getDefault())
+                  if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                      engine.setLanguage(Locale.US)
+                  }
+                  engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                      override fun onStart(utteranceId: String?) = js("onSpeakingState", true)
+                      override fun onDone(utteranceId: String?) = js("onSpeakingState", false)
+                      override fun onStop(utteranceId: String?, interrupted: Boolean) =
+                          js("onSpeakingState", false)
+
+                      @Deprecated("Deprecated in Java")
+                      override fun onError(utteranceId: String?) = js("onSpeakingState", false)
+                  })
+                  ttsReady = true
+              }
+
+              // ---------- helpers ----------
+
+              /** Call window.<fn>(args) in the web UI. Safe to call from any thread. */
+              private fun js(fn: String, vararg args: Any) {
+                  val a = args.joinToString(",") {
+                      if (it is String) JSONObject.quote(it) else it.toString()
+                  }
+                  runOnUiThread {
+                      webView.evaluateJavascript("window.$fn && window.$fn($a)", null)
+                  }
+              }
+
+              private fun speakText(raw: String) {
+                  if (!ttsReady) return
+                  val clean = raw.replace(Regex("[*_`#]"), "")
+                      .take(TextToSpeech.getMaxSpeechInputLength() - 1)
+                  tts?.setSpeechRate(store.speechRate)
+                  tts?.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "jarvis")
+              }
+
+              private fun startListeningWithPermission() {
+                  val granted = ContextCompat.checkSelfPermission(
+                      this, Manifest.permission.RECORD_AUDIO
+                  ) == PackageManager.PERMISSION_GRANTED
+                  if (granted) beginListening() else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+              }
+
+              private fun beginListening() {
+                  if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                      js("onJarvisError", "Speech recognition is not available on this device.")
+                      return
+                  }
+                  tts?.stop()
+                  recognizer?.destroy()
+                  recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
+                      setRecognitionListener(object : RecognitionListener {
+                          override fun onReadyForSpeech(params: Bundle?) = js("onListeningState", true)
+                          override fun onBeginningOfSpeech() {}
+                          override fun onRmsChanged(rmsdB: Float) {}
+                          override fun onBufferReceived(buffer: ByteArray?) {}
+                          override fun onEndOfSpeech() {}
+                          override fun onEvent(eventType: Int, params: Bundle?) {}
+
+                          override fun onPartialResults(partialResults: Bundle?) {
+                              val t = partialResults
+                                  ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                  ?.firstOrNull()
+                              if (!t.isNullOrBlank()) js("onPartial", t)
+                          }
+
+                          override fun onResults(results: Bundle?) {
+                              js("onListeningState", false)
+                              val t = results
+                                  ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                  ?.firstOrNull()
+                              if (!t.isNullOrBlank()) js("onSpeechResult", t)
+                          }
+
+                          override fun onError(error: Int) {
+                              js("onListeningState", false)
+                              if (error != SpeechRecognizer.ERROR_NO_MATCH &&
+                                  error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                              ) {
+                                  js("onJarvisError", "Voice recognition error (code $error).")
+                              }
+                          }
+                      })
+                  }
+                  val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                      putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                  }
+                  recognizer?.startListening(intent)
+              }
+
+              override fun onDestroy() {
+                  recognizer?.destroy()
+                  tts?.stop()
+                  tts?.shutdown()
+                  super.onDestroy()
+              }
+
+              // ---------- bridge: the web UI calls these ----------
+
+              inner class Bridge {
+
+                  @JavascriptInterface
+                  fun send(text: String) {
+                      val local = store.mode == "local"
+                      val key = store.apiKey
+                      if (!local && key.isBlank()) {
+                          js("onJarvisError", "No API key set. Open Settings and enter your Groq key.")
+                          return
+                      }
+                      if (local && store.localUrl.isBlank()) {
+                          js("onJarvisError", "No local server address set. Open Settings and enter it.")
+                          return
+                      }
+                      val baseUrl = if (local) store.localUrl else AiClient.GROQ_URL
+                      val model = if (local) store.localModel else store.model
+                      val snapshot: List<Pair<String, String>>
+                      synchronized(history) {
+                          history.add("user" to text)
+                          while (history.size > 20) history.removeAt(0)
+                          snapshot = ArrayList(history)
+                      }
+                      Thread {
+                          try {
+                              val reply = AiClient.chat(baseUrl, key, model, SYSTEM_PROMPT, snapshot)
+                              synchronized(history) { history.add("assistant" to reply) }
+                              js("onJarvisReply", reply)
+                              if (store.speakReplies) runOnUiThread { speakText(reply) }
+                          } catch (e: Exception) {
+                              js("onJarvisError", e.message ?: "Request failed. Check your connection.")
+                          }
+                      }.start()
+                  }
+
+                  @JavascriptInterface
+                  fun getSettings(): String = JSONObject()
+                      .put("setupDone", store.mode.isNotEmpty())
+                      .put("mode", if (store.mode.isEmpty()) "groq" else store.mode)
+                      .put("hasKey", store.apiKey.isNotBlank())
+                      .put("localUrl", store.localUrl)
+                      .put("localModel", store.localModel)
+                      .put("model", store.model)
+                      .put("speak", store.speakReplies)
+                      .put("rate", store.speechRate.toDouble())
+                      .toString()
+
+                  @JavascriptInterface
+                  fun saveSettings(json: String) {
+                      val o = JSONObject(json)
+                      if (o.optBoolean("clearKey", false)) store.apiKey = ""
+                      val key = o.optString("apiKey", "").trim()
+                      if (key.isNotEmpty()) store.apiKey = key
+                      val mode = o.optString("mode", "")
+                      if (mode == "groq" || mode == "local") store.mode = mode
+                      val localUrl = o.optString("localUrl", "").trim()
+                      if (localUrl.isNotEmpty()) store.localUrl = localUrl
+                      val localModel = o.optString("localModel", "").trim()
+                      if (localModel.isNotEmpty()) store.localModel = localModel
+                      val model = o.optString("model", "").trim()
+                      if (model.isNotEmpty()) store.model = model
+                      store.speakReplies = o.optBoolean("speak", true)
+                      store.speechRate = o.optDouble("rate", 1.0).toFloat().coerceIn(0.5f, 2.0f)
+                  }
+
+                  @JavascriptInterface
+                  fun speak(text: String) = runOnUiThread { speakText(text) }
+
+                  @JavascriptInterface
+                  fun stopSpeaking() = runOnUiThread { tts?.stop() }
+
+                  @JavascriptInterface
+                  fun startListening() = runOnUiThread { startListeningWithPermission() }
+
+                  @JavascriptInterface
+                  fun stopListening() = runOnUiThread {
+                      recognizer?.stopListening()
+                      js("onListeningState", false)
+                  }
+
+                  @JavascriptInterface
+                  fun clearHistory() {
+                      synchronized(history) { history.clear() }
+                  }
+
+                  /** Opens the Groq key page in the browser. Only this one address is allowed. */
+                  @JavascriptInterface
+                  fun openKeyPage() {
+                      runOnUiThread {
+                          try {
+                              startActivity(
+                                  Intent(Intent.ACTION_VIEW, Uri.parse("https://console.groq.com/keys"))
+                              )
+                          } catch (e: Exception) {
+                              js("onJarvisError", "Could not open the browser.")
+                          }
+                      }
+                  }
+              }
+
+              companion object {
+                  private const val SYSTEM_PROMPT =
+                      "You are JARVIS, a personal AI assistant. Be calm, precise, helpful and " +
+                      "slightly formal. Keep replies concise because they are spoken aloud: " +
+                      "no markdown, no bullet symbols, no emoji. Be honest about what you do " +
+                      "not know or cannot do."
+              }
+          }
+          JARVIS_EOF
+          cat > app/src/main/assets/index.html <<'JARVIS_EOF'
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+          <title>JARVIS</title>
+          <style>
+          :root{
+            --bg:#0b0d10; --panel:#14181d; --panel2:#1a1f26; --edge:#2a3139;
+            --cyan:#38d6ff; --blue:#1f7bff; --amber:#ffb347;
+            --text:#cfd8e0; --dim:#6b7783; --err:#ff6b5e;
+          }
+          *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+          html,body{margin:0;height:100%;background:var(--bg);color:var(--text);
+            font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+          #app{display:flex;flex-direction:column;height:100dvh}
+          header{display:flex;align-items:center;justify-content:space-between;
+            padding:12px 16px 4px}
+          .brand{letter-spacing:.42em;font-weight:600;font-size:14px;color:var(--text)}
+          #status{font-size:11px;letter-spacing:.25em;color:var(--cyan);margin-top:2px}
+          .iconbtn{background:none;border:1px solid var(--edge);color:var(--dim);
+            border-radius:8px;padding:7px 11px;font-size:12px;letter-spacing:.12em}
+          #stage{flex:0 0 34%;min-height:150px;position:relative}
+          #reactor{width:100%;height:100%;display:block}
+          #log{flex:1;overflow-y:auto;padding:8px 16px;display:flex;flex-direction:column;gap:10px}
+          .msg{max-width:88%;padding:10px 13px;border-radius:10px;font-size:15px;line-height:1.45;
+            white-space:pre-wrap;word-wrap:break-word;border:1px solid var(--edge)}
+          .msg.user{align-self:flex-end;background:var(--panel2);color:var(--text)}
+          .msg.ai{align-self:flex-start;background:var(--panel);border-left:2px solid var(--cyan)}
+          .msg.err{align-self:center;color:var(--err);border-color:#4a2622;background:#1a1110;font-size:13px}
+          .msg.sys{align-self:center;color:var(--dim);border:none;background:none;font-size:13px;text-align:center}
+          #bar{display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+            border-top:1px solid var(--edge);background:var(--panel)}
+          #input{flex:1;background:var(--bg);border:1px solid var(--edge);color:var(--text);
+            border-radius:10px;padding:11px 12px;font-size:15px;outline:none;min-width:0}
+          #input:focus{border-color:var(--cyan)}
+          .btn{width:44px;height:44px;border-radius:10px;border:1px solid var(--edge);
+            background:var(--panel2);color:var(--text);font-size:11px;letter-spacing:.08em;flex:none}
+          .btn.on{border-color:var(--cyan);color:var(--cyan);box-shadow:0 0 12px rgba(56,214,255,.35)}
+          .btn.send{background:var(--blue);border-color:var(--blue);color:#fff}
+          #settings{position:fixed;inset:0;background:rgba(5,6,8,.92);display:none;
+            align-items:flex-end;justify-content:center;z-index:10}
+          #settings.open{display:flex}
+          .sheet{width:100%;max-width:520px;background:var(--panel);border:1px solid var(--edge);
+            border-radius:16px 16px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom));
+            max-height:90dvh;overflow-y:auto}
+          .sheet h2{margin:0 0 14px;font-size:13px;letter-spacing:.3em;color:var(--cyan);font-weight:600}
+          label{display:block;font-size:12px;color:var(--dim);margin:12px 0 5px;letter-spacing:.06em}
+          .sheet input[type=password],.sheet input[type=text]{width:100%;background:var(--bg);
+            border:1px solid var(--edge);color:var(--text);border-radius:8px;padding:10px;font-size:14px}
+          .row{display:flex;align-items:center;justify-content:space-between;margin-top:12px;font-size:14px}
+          .actions{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}
+          .actions button{flex:1;min-width:110px;padding:11px;border-radius:8px;border:1px solid var(--edge);
+            background:var(--panel2);color:var(--text);font-size:13px}
+          .actions .primary{background:var(--blue);border-color:var(--blue);color:#fff}
+          .actions .danger{color:var(--err)}
+          .hint{font-size:11px;color:var(--dim);margin-top:6px;line-height:1.4}
+          .ov{position:fixed;inset:0;background:rgba(5,6,8,.97);display:none;
+            align-items:center;justify-content:center;z-index:20;padding:16px}
+          .ov.open{display:flex}
+          .ov .sheet{border-radius:16px;max-width:460px}
+          .vstack{flex-direction:column}
+          select{width:100%;background:var(--bg);border:1px solid var(--edge);color:var(--text);
+            border-radius:8px;padding:10px;font-size:14px}
+          .err-text{color:var(--err);font-size:12px;margin-top:10px;min-height:14px}
+          </style>
+          </head>
+          <body>
+          <div id="app">
+            <header>
+              <div>
+                <div class="brand">JARVIS</div>
+                <div id="status">STANDBY</div>
+              </div>
+              <button class="iconbtn" id="openSettings">SETTINGS</button>
+            </header>
+
+            <div id="stage"><canvas id="reactor"></canvas></div>
+
+            <div id="log"></div>
+
+            <div id="bar">
+              <button class="btn" id="mic" title="Microphone">MIC</button>
+              <input id="input" type="text" placeholder="Speak or type to JARVIS" autocomplete="off">
+              <button class="btn" id="stop" title="Stop speaking">STOP</button>
+              <button class="btn send" id="send">SEND</button>
+            </div>
+          </div>
+
+          <div id="settings">
+            <div class="sheet">
+              <h2>SETTINGS</h2>
+              <label for="mode">AI source</label>
+              <select id="mode">
+                <option value="groq">Groq API key (cloud)</option>
+                <option value="local">Local AI server</option>
+              </select>
+
+              <div id="groqBox">
+                <label for="apiKey">Groq API key</label>
+                <input id="apiKey" type="password" autocomplete="off" placeholder="gsk_...">
+                <div class="hint">Stored encrypted on this phone only. Sent only to Groq.</div>
+                <label for="model">Model</label>
+                <input id="model" type="text" placeholder="llama-3.3-70b-versatile">
+              </div>
+
+              <div id="localBox" style="display:none">
+                <label for="localUrl">Server address</label>
+                <input id="localUrl" type="text" autocomplete="off" placeholder="http://192.168.1.20:11434/v1">
+                <label for="localModel">Model name</label>
+                <input id="localModel" type="text" autocomplete="off" placeholder="llama3.2">
+                <div class="hint">Any OpenAI-compatible server (Ollama, LM Studio, llama.cpp). Must be reachable from this phone.</div>
+              </div>
+
+              <div class="row"><span>Speak replies aloud</span><input id="speak" type="checkbox"></div>
+
+              <label for="rate">Speaking speed: <span id="rateVal">1.0</span>x</label>
+              <input id="rate" type="range" min="0.5" max="2" step="0.1" value="1" style="width:100%">
+
+              <div class="actions">
+                <button class="primary" id="save">Save</button>
+                <button id="close">Close</button>
+              </div>
+              <div class="actions">
+                <button class="danger" id="clearKey">Remove key</button>
+                <button class="danger" id="clearChat">Clear chat</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="setup" class="ov">
+            <div class="sheet">
+              <h2>WELCOME TO JARVIS</h2>
+
+              <div id="setupChoice">
+                <div class="hint" style="font-size:13px;margin:0 0 14px">Choose how JARVIS gets its intelligence.</div>
+                <div class="actions vstack">
+                  <button class="primary" id="chooseKey">Create or enter API key (Groq)</button>
+                  <button id="chooseLocal">Use local AI server</button>
+                </div>
+              </div>
+
+              <div id="setupKey" style="display:none">
+                <div class="hint" style="font-size:13px">No key yet? Create a free one in your browser, then copy it and paste it below.</div>
+                <div class="actions"><button id="getKey">Create free Groq key</button></div>
+                <label for="sKey">Groq API key</label>
+                <input id="sKey" type="password" autocomplete="off" placeholder="gsk_...">
+                <div class="actions">
+                  <button class="primary" id="sKeySave">Start JARVIS</button>
+                  <button class="back">Back</button>
+                </div>
+              </div>
+
+              <div id="setupLocal" style="display:none">
+                <div class="hint" style="font-size:13px">Enter the address of an OpenAI-compatible AI server (Ollama, LM Studio, llama.cpp) that this phone can reach.</div>
+                <label for="sUrl">Server address</label>
+                <input id="sUrl" type="text" autocomplete="off" placeholder="http://192.168.1.20:11434/v1">
+                <label for="sModel">Model name</label>
+                <input id="sModel" type="text" autocomplete="off" placeholder="llama3.2">
+                <label for="sLocalKey">Key (optional)</label>
+                <input id="sLocalKey" type="password" autocomplete="off" placeholder="leave empty if none">
+                <div class="actions">
+                  <button class="primary" id="sLocalSave">Start JARVIS</button>
+                  <button class="back">Back</button>
+                </div>
+              </div>
+
+              <div class="err-text" id="setupErr"></div>
+            </div>
+          </div>
+
+          <script>
+          // Stub so the page still loads in a normal browser for design preview
+          const A = window.Android || {
+            send(){ setTimeout(()=>window.onJarvisReply("Preview mode: no Android bridge."),400) },
+            getSettings(){ return JSON.stringify({setupDone:false,mode:"groq",hasKey:false,localUrl:"",localModel:"llama3.2",model:"llama-3.3-70b-versatile",speak:true,rate:1}) },
+            saveSettings(){}, speak(){}, stopSpeaking(){}, startListening(){}, stopListening(){}, clearHistory(){}, openKeyPage(){}
+          };
+
+          const $ = id => document.getElementById(id);
+          const logEl = $('log'), input = $('input'), statusEl = $('status');
+
+          // ---------- state ----------
+          let listening = false, speaking = false, thinking = false;
+          function state(){
+            if (thinking) return 'thinking';
+            if (speaking) return 'speaking';
+            if (listening) return 'listening';
+            return 'idle';
+          }
+          function refresh(){
+            const s = state();
+            statusEl.textContent = {idle:'STANDBY',listening:'LISTENING',thinking:'THINKING',speaking:'SPEAKING'}[s];
+            statusEl.style.color = s==='thinking' ? 'var(--amber)' : 'var(--cyan)';
+            $('mic').classList.toggle('on', listening);
+            target = {idle:.35, listening:.7, thinking:.9, speaking:.8}[s];
+          }
+
+          // ---------- chat ----------
+          function addMsg(kind, text){
+            const d = document.createElement('div');
+            d.className = 'msg ' + kind;
+            d.textContent = text;           // textContent: model output is never run as HTML
+            logEl.appendChild(d);
+            logEl.scrollTop = logEl.scrollHeight;
+          }
+          function submit(){
+            const t = input.value.trim();
+            if (!t) return;
+            input.value = '';
+            addMsg('user', t);
+            thinking = true; refresh();
+            A.send(t);
+          }
+
+          // ---------- callbacks from Android ----------
+          window.onJarvisReply = t => { thinking = false; addMsg('ai', t); refresh(); };
+          window.onJarvisError = m => { thinking = false; listening = false; addMsg('err', m); refresh(); };
+          window.onListeningState = v => { listening = v; refresh(); };
+          window.onSpeakingState = v => { speaking = v; refresh(); };
+          window.onPartial = t => { input.value = t; };
+          window.onSpeechResult = t => { input.value = t; submit(); };
+
+          // ---------- controls ----------
+          $('send').onclick = submit;
+          input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+          $('mic').onclick = () => { listening ? A.stopListening() : A.startListening(); };
+          $('stop').onclick = () => { A.stopSpeaking(); A.stopListening(); };
+
+          // ---------- settings ----------
+          function openSettings(){
+            const s = JSON.parse(A.getSettings());
+            $('apiKey').value = '';
+            $('apiKey').placeholder = s.hasKey ? 'Key saved (enter a new one to replace)' : 'gsk_...';
+            $('model').value = s.model;
+            $('mode').value = s.mode; applyMode();
+            $('localUrl').value = s.localUrl;
+            $('localModel').value = s.localModel;
+            $('speak').checked = s.speak;
+            $('rate').value = s.rate; $('rateVal').textContent = Number(s.rate).toFixed(1);
+            $('settings').classList.add('open');
+          }
+          $('openSettings').onclick = openSettings;
+          $('close').onclick = () => $('settings').classList.remove('open');
+          $('rate').oninput = e => $('rateVal').textContent = Number(e.target.value).toFixed(1);
+          $('save').onclick = () => {
+            A.saveSettings(JSON.stringify({
+              mode: $('mode').value,
+              apiKey: $('apiKey').value, model: $('model').value,
+              localUrl: $('localUrl').value, localModel: $('localModel').value,
+              speak: $('speak').checked, rate: parseFloat($('rate').value)
+            }));
+            $('settings').classList.remove('open');
+            addMsg('sys', 'Settings saved.');
+          };
+          $('clearKey').onclick = () => {
+            A.saveSettings(JSON.stringify({clearKey:true, model:$('model').value,
+              speak:$('speak').checked, rate:parseFloat($('rate').value)}));
+            $('settings').classList.remove('open');
+            addMsg('sys', 'API key removed.');
+          };
+          $('clearChat').onclick = () => {
+            A.clearHistory(); logEl.innerHTML = '';
+            $('settings').classList.remove('open');
+          };
+
+          // ---------- reactor animation ----------
+          const cv = $('reactor'), cx = cv.getContext('2d');
+          let target = .35, energy = .35, t = 0, ang = 0;
+          function resize(){
+            const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+            cv.width = Math.max(1, r.width * d); cv.height = Math.max(1, r.height * d);
+          }
+          window.addEventListener('resize', resize); resize();
+
+          function arcRing(x, y, r, lw, n, fill, rot, color){
+            cx.strokeStyle = color; cx.lineWidth = lw;
+            const step = Math.PI * 2 / n;
+            for (let i = 0; i < n; i++){
+              const a = rot + i * step;
+              cx.beginPath(); cx.arc(x, y, r, a, a + step * fill); cx.stroke();
+            }
+          }
+          function frame(){
+            requestAnimationFrame(frame);
+            const w = cv.width, h = cv.height, s = Math.min(w, h) / 2 * 0.92, x = w / 2, y = h / 2;
+            const st = state();
+            energy += (target - energy) * 0.05;
+            const pulse = st === 'speaking' ? .5 + .5 * Math.sin(t * 9) : .5 + .5 * Math.sin(t * 2);
+            ang += .004 + energy * .02; t += .016;
+            const accent = st === 'thinking' ? '255,179,71' : '56,214,255';
+
+            cx.clearRect(0, 0, w, h);
+            const g = cx.createRadialGradient(x, y, 0, x, y, s);
+            g.addColorStop(0, `rgba(${accent},${.5 * energy + .15 * pulse})`);
+            g.addColorStop(.4, `rgba(31,123,255,${.16 * energy})`);
+            g.addColorStop(1, 'rgba(0,0,0,0)');
+            cx.fillStyle = g; cx.fillRect(0, 0, w, h);
+
+            const lw = s * .028;
+            // outer titanium-style segmented ring
+            arcRing(x, y, s * .96, lw, 36, .72, ang * .6, 'rgba(150,165,180,.55)');
+            // blue ring counter-rotating
+            arcRing(x, y, s * .82, lw * .7, 60, .45, -ang * 1.1, `rgba(31,123,255,${.45 + .4 * energy})`);
+            // fine tick ring
+            arcRing(x, y, s * .70, lw * .4, 120, .25, ang * .4, 'rgba(120,135,150,.45)');
+            // cyan main ring
+            cx.strokeStyle = `rgba(${accent},${.55 + .35 * energy})`; cx.lineWidth = lw * 1.3;
+            cx.beginPath(); cx.arc(x, y, s * .58, 0, Math.PI * 2); cx.stroke();
+
+            // coils
+            const coils = 10;
+            for (let i = 0; i < coils; i++){
+              const a = ang * 1.6 + i * Math.PI * 2 / coils;
+              cx.save(); cx.translate(x + Math.cos(a) * s * .40, y + Math.sin(a) * s * .40); cx.rotate(a);
+              cx.fillStyle = st === 'thinking'
+                ? `rgba(255,179,71,${.45 + .4 * pulse})` : `rgba(56,214,255,${.4 + .4 * energy})`;
+              cx.fillRect(-s * .06, -s * .035, s * .12, s * .07);
+              cx.restore();
+            }
+            // core
+            const c = cx.createRadialGradient(x, y, 0, x, y, s * (.2 + .03 * pulse * energy));
+            c.addColorStop(0, 'rgba(255,255,255,.95)');
+            c.addColorStop(.5, `rgba(${accent},.85)`);
+            c.addColorStop(1, `rgba(${accent},0)`);
+            cx.fillStyle = c; cx.beginPath(); cx.arc(x, y, s * .24, 0, Math.PI * 2); cx.fill();
+          }
+          frame(); refresh();
+
+          // ---------- settings: mode switch ----------
+          function applyMode(){
+            const m = $('mode').value;
+            $('groqBox').style.display = m === 'groq' ? 'block' : 'none';
+            $('localBox').style.display = m === 'local' ? 'block' : 'none';
+          }
+          $('mode').onchange = applyMode;
+
+          // ---------- first-run setup ----------
+          function setupStep(step){
+            $('setupChoice').style.display = step === 'choice' ? 'block' : 'none';
+            $('setupKey').style.display = step === 'key' ? 'block' : 'none';
+            $('setupLocal').style.display = step === 'local' ? 'block' : 'none';
+            $('setupErr').textContent = '';
+          }
+          $('chooseKey').onclick = () => setupStep('key');
+          $('chooseLocal').onclick = () => setupStep('local');
+          document.querySelectorAll('.back').forEach(b => b.onclick = () => setupStep('choice'));
+          $('getKey').onclick = () => A.openKeyPage();
+          function finishSetup(msg){
+            $('setup').classList.remove('open');
+            addMsg('sys', msg + ' Tap MIC to speak, or type below.');
+          }
+          $('sKeySave').onclick = () => {
+            const k = $('sKey').value.trim();
+            if (!k){ $('setupErr').textContent = 'Paste your API key first.'; return; }
+            A.saveSettings(JSON.stringify({mode:'groq', apiKey:k, speak:true, rate:1}));
+            $('sKey').value = '';
+            finishSetup('JARVIS online (Groq).');
+          };
+          $('sLocalSave').onclick = () => {
+            const u = $('sUrl').value.trim();
+            if (!u){ $('setupErr').textContent = 'Enter the server address.'; return; }
+            A.saveSettings(JSON.stringify({
+              mode:'local', localUrl:u, localModel:$('sModel').value.trim() || 'llama3.2',
+              apiKey:$('sLocalKey').value.trim(), speak:true, rate:1
+            }));
+            $('sLocalKey').value = '';
+            finishSetup('JARVIS online (local server).');
+          };
+
+          // ---------- first message ----------
+          try {
+            const s = JSON.parse(A.getSettings());
+            if (!s.setupDone) {
+              setupStep('choice');
+              $('setup').classList.add('open');
+            } else {
+              addMsg('sys', 'JARVIS online. Tap MIC to speak, or type below.');
+            }
+          } catch (e) {}
+          </script>
+          </body>
+          </html>
+          JARVIS_EOF
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
